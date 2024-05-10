@@ -6,3 +6,6 @@ This project is a simple login and registration system with a graphical password
 
 ## Login-website
 This project is a simple login and registration webpage using php, html and css.
+
+## Password and Secret-key Generator
+These are the basic python scripts that generates password based on user's choice and Secret-key generator generates a secret key which is used to decrypt and encrypt messages.
