@@ -1,0 +1,307 @@
+from flask import Flask, request, render_template, send_from_directory, redirect, url_for, flash
+import os
+from PIL import Image, ImageChops
+import numpy as np
+import matplotlib.pyplot as plt
+import pytesseract
+import piexif
+import io
+import logging
+
+app = Flask(__name__)
+app.secret_key = 'secret_key'
+RESULTS_DIR = 'static/results'
+app.config['UPLOAD_FOLDER'] = 'static/uploads'
+
+# Ensure results and uploads directories exist
+os.makedirs(RESULTS_DIR, exist_ok=True)
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+# Configure logging
+logging.basicConfig(filename=os.path.join(RESULTS_DIR, 'analysis_log.txt'), level=logging.INFO)
+
+# Function to extract text from an image file
+def extract_txt_file(file_path):
+    try:
+        image = Image.open(file_path)
+        return extract_txt_img(image)
+    except IOError:
+        return extract_txt_unsupported_file(file_path)
+
+def extract_txt_img(image):
+    try:
+        extracted_text = pytesseract.image_to_string(image)
+        return extracted_text.strip(), image
+    except Exception as e:
+        return f"Error processing image: {e}", None
+
+def extract_txt_unsupported_file(file_path):
+    try:
+        with open(file_path, 'rb') as file:
+            content = file.read()
+            try:
+                image = Image.open(io.BytesIO(content))
+                return "Image extracted successfully.", image
+            except IOError:
+                decoded_content = content.decode('utf-8', errors='ignore')
+                return decoded_content.strip(), None
+    except Exception as e:
+        return f"Error: {e}", None
+
+# Function to encode an image with a message
+def encode_image(input_image_path, output_image_path, message):
+    img = Image.open(input_image_path)
+    encoded_img = img.copy()
+    
+    message += chr(0)
+    binary_message = ''.join(format(ord(c), '08b') for c in message)
+
+    if len(binary_message) > img.width * img.height:
+        raise ValueError("Message is too long to fit in the selected image.")
+
+    data_index = 0
+    width, height = img.size
+
+    for x in range(width):
+        for y in range(height):
+            if data_index < len(binary_message):
+                pixel = list(encoded_img.getpixel((x, y)))
+                pixel[0] = (pixel[0] & ~1) | int(binary_message[data_index])
+                encoded_img.putpixel((x, y), tuple(pixel))
+                data_index += 1
+            else:
+                break
+        else:
+            continue
+        break
+
+    encoded_img.save(output_image_path, format='PNG')
+
+def decode_image(image_path):
+    img = Image.open(image_path)
+    binary_message = ""
+    width, height = img.size
+
+    for x in range(width):
+        for y in range(height):
+            pixel = img.getpixel((x, y))
+            binary_message += str(pixel[0] & 1)
+
+    message = ""
+    for i in range(0, len(binary_message), 8):
+        byte = binary_message[i:i+8]
+        if byte == '00000000':
+            break
+        message += chr(int(byte, 2))
+
+    return message
+
+# EXIF extraction function
+def extract_exif(image_path):
+    try:
+        image = Image.open(image_path)
+        if 'exif' not in image.info:
+            return None
+        exif_data = piexif.load(image.info['exif'])
+        camera_info = {
+            "Make": exif_data['0th'].get(271, b'').decode('utf-8', 'ignore'),
+            "Model": exif_data['0th'].get(272, b'').decode('utf-8', 'ignore'),
+            "DateTime": exif_data['0th'].get(306, b'').decode('utf-8', 'ignore'),
+            "ExposureTime": exif_data['Exif'].get(33434, b''),
+            "FNumber": exif_data['Exif'].get(33437, b''),
+            "ISOSpeedRatings": exif_data['Exif'].get(34855, b''),
+        }
+        return camera_info
+    except Exception as e:
+        return {"Error": str(e)}
+
+# Error Level Analysis function
+def error_level_analysis(original_image_path, scale_factor=40, difference_threshold=30):
+    original_image = Image.open(original_image_path)
+    temporary_image_path = os.path.join(RESULTS_DIR, 'Temporary_Image.jpg')
+    original_image.save(temporary_image_path, quality=90)
+    temporary_image = Image.open(temporary_image_path)
+
+    difference = ImageChops.difference(original_image, temporary_image)
+    pixel_data = difference.load()
+    width, height = difference.size
+    marked_image = Image.new('RGB', (width, height), (0, 0, 0))
+    pixel_mark = marked_image.load()
+
+    for x in range(width):
+        for y in range(height):
+            pixel_diff = sum(pixel_data[x, y])
+            if pixel_diff > difference_threshold:
+                intensity = min((pixel_diff - difference_threshold) * scale_factor, 255)
+                pixel_mark[x, y] = (intensity, 0, 0)
+
+    marked_image_path = os.path.join(RESULTS_DIR, 'Result_Image.jpg')
+    marked_image.save(marked_image_path)
+
+    # Generate and save heatmap
+    generate_heatmap(pixel_data, width, height)
+
+    is_authentic = check_authenticity(marked_image)
+    return is_authentic, marked_image_path
+
+def generate_heatmap(pixel_data, width, height):
+    pixel_values = np.zeros((height, width))
+    for x in range(width):
+        for y in range(height):
+            pixel_values[y][x] = sum(pixel_data[x, y])
+    plt.imshow(pixel_values, cmap='hot', interpolation='nearest')
+    plt.colorbar()
+    plt.title('Heatmap')
+    plt.savefig(os.path.join(RESULTS_DIR, 'Heatmap_Graph.png'))
+    plt.close()
+
+def check_authenticity(marked_image):
+    width, height = marked_image.size
+    pixel_mark = marked_image.load()
+    for x in range(width):
+        for y in range(height):
+            if pixel_mark[x, y] != (0, 0, 0):
+                return False
+    return True
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/text_extraction', methods=['GET', 'POST'])
+def text_extraction():
+    if request.method == 'POST':
+        if 'file' not in request.files:
+            flash('No file part')
+            return redirect(request.url)
+        file = request.files['file']
+        if file.filename == '':
+            flash('No selected file')
+            return redirect(request.url)
+        if file:
+            file_path = os.path.join(RESULTS_DIR, file.filename)
+            file.save(file_path)
+            extracted_text, image = extract_txt_file(file_path)
+
+            # Log the result
+            logging.info(f'Text Extraction: {extracted_text}')
+            flash(f'Extracted Text: {extracted_text}')
+
+            # Show extracted image if applicable
+            if image:
+                image.show()
+
+            return redirect(url_for('results', output=extracted_text))
+
+    return render_template('text_extraction.html')
+
+@app.route('/encode', methods=['POST'])
+def encode():
+    if 'image' not in request.files:
+        flash('No image file provided.')
+        return redirect(url_for('index'))
+    
+    image_file = request.files['image']
+    message = request.form['message']
+
+    if image_file.filename == '' or not message:
+        flash('No selected file or message is empty.')
+        return redirect(url_for('index'))
+
+    input_image_path = os.path.join(app.config['UPLOAD_FOLDER'], image_file.filename)
+    image_file.save(input_image_path)
+
+    output_image_path = os.path.join(app.config['UPLOAD_FOLDER'], 'encoded_' + image_file.filename)
+
+    try:
+        encode_image(input_image_path, output_image_path, message)
+        flash('Message encoded successfully!')
+    except ValueError as ve:
+        flash(str(ve))
+    except Exception as e:
+        flash('Error: ' + str(e))
+
+    return redirect(url_for('index'))
+
+@app.route('/decode', methods=['POST'])
+def decode():
+    if 'image' not in request.files:
+        flash('No image file provided.')
+        return redirect(url_for('index'))
+    
+    image_file = request.files['image']
+
+    if image_file.filename == '':
+        flash('No selected file.')
+        return redirect(url_for('index'))
+
+    input_image_path = os.path.join(app.config['UPLOAD_FOLDER'], image_file.filename)
+    image_file.save(input_image_path)
+
+    try:
+        hidden_message = decode_image(input_image_path)
+        flash(f'Hidden message: {hidden_message}')
+    except Exception as e:
+        flash('Error: ' + str(e))
+
+    return redirect(url_for('index'))
+
+    
+
+@app.route('/exif', methods=['GET', 'POST'])
+def exif():
+    if request.method == 'POST':
+        if 'file' not in request.files:
+            flash('No file part')
+            return redirect(request.url)
+        file = request.files['file']
+        if file.filename == '':
+            flash('No selected file')
+            return redirect(request.url)
+        if file:
+            file_path = os.path.join(RESULTS_DIR, file.filename)
+            file.save(file_path)
+            exif_info = extract_exif(file_path)
+
+            # Log the result
+            logging.info(f'EXIF Data: {exif_info}')
+            flash(f'EXIF Data: {exif_info}')
+            return redirect(url_for('results', output=f'EXIF Data: {exif_info}'))
+
+    return render_template('exif.html')
+
+@app.route('/error_level_analysis', methods=['GET', 'POST'])
+def error_level_analysis_view():
+    if request.method == 'POST':
+        if 'file' not in request.files:
+            flash('No file part')
+            return redirect(request.url)
+        file = request.files['file']
+        if file.filename == '':
+            flash('No selected file')
+            return redirect(request.url)
+        if file:
+            file_path = os.path.join(RESULTS_DIR, file.filename)
+            file.save(file_path)
+            is_authentic, marked_image_path = error_level_analysis(file_path)
+
+            # Log the result
+            result_text = "The Image is authentic" if is_authentic else "The Image is not authentic"
+            logging.info(result_text)
+            flash(result_text)
+
+            return redirect(url_for('results', output=result_text))
+
+    return render_template('error_level_analysis.html')
+
+@app.route('/results')
+def results():
+    output = request.args.get('output')
+    return render_template('results.html', output=output)
+
+@app.route('/static/results/<path:filename>')
+def send_results(filename):
+    return send_from_directory(RESULTS_DIR, filename)
+
+if __name__ == '__main__':
+    app.run(debug=True)
