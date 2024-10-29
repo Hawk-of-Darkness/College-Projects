@@ -1,0 +1,89 @@
+from flask import Flask, request, jsonify, render_template
+import requests
+from bs4 import BeautifulSoup
+
+app = Flask(__name__)
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/analyze', methods=['POST'])
+def analyze_email():
+    data = request.json
+    email = data.get('email')
+
+    companies_data = analyze_companies(email)
+    data_leaks = check_data_leaks(email)
+    additional_info = get_additional_info(email)  # New function for additional info
+    report = generate_report(companies_data, data_leaks, additional_info)
+
+    return jsonify(report)
+
+def analyze_companies(email):
+    # Replace with a valid URL that provides user data
+    url = f"https://example.com/api/userinfo?email={email}"  # Example placeholder
+
+    try:
+        response = requests.get(url)
+        response.raise_for_status()  # Check for HTTP errors
+
+        # Parse the page content
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        # Example selectors - Adjust according to the actual HTML structure
+        name = soup.find('div', class_='user-name').text
+        bio = soup.find('div', class_='user-bio').text
+        location = soup.find('div', class_='user-location').text
+
+        return {
+            'Name': name,
+            'Bio': bio,
+            'Location': location,
+        }
+
+    except requests.RequestException as e:
+        print(f"Error fetching data: {e}")
+        return None
+
+def get_additional_info(email):
+    # Mock function to simulate fetching additional user info
+    return {
+        "social_profiles": {
+            "LinkedIn": "https://linkedin.com/in/example",
+            "Twitter": "https://twitter.com/example"
+        },
+        "publications": [
+            {"title": "Understanding Python", "year": 2022},
+            {"title": "Web Development Best Practices", "year": 2023}
+        ]
+    }
+
+def check_data_leaks(email):
+    # Mock logic to check for data leaks
+    return {
+        "leaks": [
+            {"company": "CompanyA", "severity": "High"},
+            {"company": "CompanyB", "severity": "Low"}
+        ]
+    }
+
+def generate_report(companies_data, data_leaks, additional_info):
+    return {
+        "companies_data": companies_data,
+        "data_leaks": data_leaks,
+        "additional_info": additional_info,
+        "recommendations": "Consider contacting CompanyA to delete your sensitive data."
+    }
+
+@app.route('/delete_data', methods=['POST'])
+def delete_data():
+    data = request.json
+    email = data.get('email')
+    company = data.get('company')
+    
+    # Mock deletion logic
+    return jsonify({"message": f"Request to delete data from {company} for {email} has been submitted."})
+
+if __name__ == '__main__':
+    app.run(debug=True)
