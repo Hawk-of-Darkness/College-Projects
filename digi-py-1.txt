@@ -1,0 +1,56 @@
+from flask import Flask, request, jsonify, render_template
+import json
+
+app = Flask(__name__)
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/analyze', methods=['POST'])
+def analyze_email():
+    data = request.json
+    email = data.get('email')
+    
+    companies_data = analyze_companies(email)
+    data_leaks = check_data_leaks(email)
+    report = generate_report(companies_data, data_leaks)
+
+    return jsonify(report)
+
+def analyze_companies(email):
+    # Mock logic to simulate companies holding data
+    return {
+        "companies": [
+            {"name": "CompanyA", "sensitive_data": ["Name", "Email Address"]},
+            {"name": "CompanyB", "sensitive_data": ["Address", "Phone Number"]}
+        ]
+    }
+
+def check_data_leaks(email):
+    # Mock logic to check for data leaks
+    return {
+        "leaks": [
+            {"company": "CompanyA", "severity": "High"},
+            {"company": "CompanyB", "severity": "Low"}
+        ]
+    }
+
+def generate_report(companies_data, data_leaks):
+    return {
+        "companies_data": companies_data,
+        "data_leaks": data_leaks,
+        "recommendations": "Consider contacting CompanyA to delete your sensitive data."
+    }
+
+@app.route('/delete_data', methods=['POST'])
+def delete_data():
+    data = request.json
+    email = data.get('email')
+    company = data.get('company')
+    
+    # Mock deletion logic
+    return jsonify({"message": f"Request to delete data from {company} for {email} has been submitted."})
+
+if __name__ == '__main__':
+    app.run(debug=True)
